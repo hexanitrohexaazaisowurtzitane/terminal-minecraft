@@ -10,6 +10,7 @@ Additionally, if you have above-medium / high end harware, also change the setti
 <img src="https://github.com/user-attachments/assets/a728239c-0904-4313-9d9c-bc2aa7314bf1" width="400">
 
 *windowed/fullscreen+my house*
+
 NOTE: Beware that quality scales up with the window size and font size, but so does the impact on the cpu!
 
 

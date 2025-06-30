@@ -20,6 +20,7 @@ NOTE: Beware that quality scales up with the window size and font size, but so d
 * Ctrl^C : close  ( cleanup may take a few seconds )
 * TAB : toggle flight mode
 * C : move down
+
 Notice: Beware that the mouse will be thread locked when chunk pregeneration finishes and will only be released when the program is closed
 
 

@@ -1,18 +1,24 @@
 # terminal-minecraft
 Simple minecraft clone but it runs in the windows terminal
 
+# showcase
+<img src="https://github.com/user-attachments/assets/558d6d46-7782-481e-aef4-ea3971560e06" width="400">
+<img src="https://github.com/user-attachments/assets/a728239c-0904-4313-9d9c-bc2aa7314bf1" width="400">
+
 
 # controls
 * mouse : camera look
 * WASD : movement
 * Ctrl^C : close  ( cleanup may take a few seconds )
+* TAB : toggle flight mode
+* C : move down
 Notice: Beware that the mouse will be thread locked when chunk pregeneration finishes and will only be released when the program is closed
 
 
 # updates
 v 1.0.0 : Basic Clone with curses rendering
 * Showcase: https://www.youtube.com/watch?v=9djN_DJn6x0&t
-* Procedural chunk generation ( 2 biomes )
+* Procedural chunk generation ( 2 biomes : plains, forest )
 * Cave and tree generation (mostly random)
 * Windows curses render from opengl context
 * Primitive mouse draw controller

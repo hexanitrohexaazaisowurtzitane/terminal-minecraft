@@ -47,17 +47,18 @@ v 1.2.0  ( CURRENT )
 * Logo title thingy
 
 # todo
+* ✗ Add dirty chunk memory
+* ✗ Add world save and load features
 * ✓ Fix stupid ahh raytrace offsets
 * ✓ Reduce memory load on mesh render
 * ✓ Cache colors and rendered data, draw only changes
 * ✓ Cache rencently visited world data
 * ✓ Use lazy, position based generatiors with priority for less intense generation
 * ✓ Fix color combination out of bounds artifacts
-* ✗ Redo physics engine into a decent one
 * ✗ Add an actuall title screen
+* ✗ Add propper gui like pause menu, settings, etc
 * ✗ Add an actuall chat and achievements
 * ✗ Fix water broken face culling at chunk edges
 * ✗ Paint x,-x and z,-z faces of different colors to distinguish them
-* ✗ Add some kind of light-shadow system
 * ✓ Block hotbar
 * Improved on preformance and caching

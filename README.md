@@ -36,7 +36,7 @@ v 1.0.0 : Basic Clone with curses rendering
 * total of 10 block types
 
 v 1.2.0  ( CURRENT )
-* Showcase:
+* Showcase: https://www.youtube.com/watch?v=7TLsNwHLdWw&t
 * Smoother and lazyer chunk generation, load and unloading
 * Mesh caching and faster mesh updates
 * Block placement/breaking/selection

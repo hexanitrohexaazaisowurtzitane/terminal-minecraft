@@ -61,4 +61,10 @@ v 1.2.0  ( CURRENT )
 * ✗ Fix water broken face culling at chunk edges
 * ✗ Paint x,-x and z,-z faces of different colors to distinguish them
 * ✓ Block hotbar
-* Improved on preformance and caching
+* ✗ Improved on preformance and caching
+
+
+
+
+# diagram
+![Untitled Diagram drawio(1)](https://github.com/user-attachments/assets/6e2dacbf-65f1-4746-9931-352bf4dda993)

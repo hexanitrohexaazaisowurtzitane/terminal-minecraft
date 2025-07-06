@@ -1,3 +1,4 @@
+import os
 import time
 import curses
 import sys
@@ -34,6 +35,8 @@ class InputManager:
         '5': ord('5'), '6': ord('6'), '7': ord('7'), '8': ord('8'),
         '9': ord('9'),
         'up': -1, 'down': -2, 'left': -3, 'right': -4,
+        'insert': -11,
+        'delete': -10,
     }
 
     def __init__(self):
@@ -91,6 +94,9 @@ class InputManager:
         keysyms_map[Xlib.XK.XK_Left] = -3
         keysyms_map[Xlib.XK.XK_Right] = -4
 
+        keysyms_map[Xlib.XK.XK_Insert] = -11
+        keysyms_map[Xlib.XK.XK_Delete] = -10
+
         # Also watch for raw ESC and Ctrl+C
         keysyms_map[Xlib.XK.XK_Escape] = 27
         keysyms_map[Xlib.XK.XK_C] = ord('c')
@@ -130,12 +136,18 @@ class InputManager:
                         d.sync()
                 elif e.type in (X.ButtonPress, X.ButtonRelease):
                     btn = e.detail
-                    with self.lock:
-                        if e.type == X.ButtonPress:
-                            self.mouse_buttons.add(btn)
-                            self.mouse_clicks.add(btn)
-                        else:
-                            self.mouse_buttons.discard(btn)
+                    if btn == 3:
+                        btn = 2  # remap X11 right button to Windows style
+                    elif btn == 2:
+                        btn = 3  # remap X11 middle button to Windows style (optional)
+                    
+                    if btn in (1, 2):  # track only left and right for now
+                        with self.lock:
+                            if e.type == X.ButtonPress:
+                                self.mouse_buttons.add(btn)
+                                self.mouse_clicks.add(btn)
+                            else:
+                                self.mouse_buttons.discard(btn)
             time.sleep(0.001)
 
     def _on_mouse_click(self, x: int, y: int, button, pressed: bool):
@@ -235,27 +247,10 @@ class InputManager:
 
     def _exit(self):
         print("Exiting on input.")
-        self.cleanup()
-        sys.exit(0)
-
-    def cleanup(self):
-        self.running = False
-        self.unlock_mouse()
-        if sys.platform == "win32":
-            keyboard.unhook_all()
-        else:
-            root.ungrab_keyboard(X.CurrentTime)
-            root.ungrab_pointer(X.CurrentTime)
-            d.flush()
-        self.mouse_listener.stop()
-        if self.lock_thread.is_alive():
-            self.lock_thread.join(timeout=1.0)
-        if not sys.platform == "win32" and self.keyboard_thread.is_alive():
-            self.keyboard_thread.join(timeout=1.0)
+        os.kill(os.getpid(), signal.SIGKILL)
 
 
 class ChunkUpdateManager:
-
     
     def __init__(self, chunk_manager, 
     update_interval=1.0, min_movement_threshold=6.0, min_fps_threshold=15.0):
@@ -372,12 +367,6 @@ class GameController:
         mouse_buttons = self.input_manager.get_mouse_buttons()
         mouse_clicks = self.input_manager.get_mouse_clicks()
         
-        """
-        if self.input_manager.MAPPINGS['q'] in keys:
-            self.running = False
-            return
-        """
-        
         # hotbar
         for i in range(1, 10):
             if self.input_manager.MAPPINGS[str(i)] in keys:
@@ -398,11 +387,14 @@ class GameController:
             self.renderer.pitch -= dy * self.renderer.mouse_sensitivity
             self.renderer.pitch = np.clip(self.renderer.pitch, -89.0, 89.0)
             self.renderer.update_camera_vectors()
-        
 
 
-        if 1 in mouse_clicks: self.renderer.break_block()
-        if 2 in mouse_clicks: self.renderer.place_block()
+        # block manipulation
+        if 1 in mouse_clicks : self.renderer.break_block()
+        if 2 in mouse_clicks : self.renderer.place_block()
+
+        if self.input_manager.MAPPINGS['delete'] in keys : self.renderer.break_block()
+        if self.input_manager.MAPPINGS['insert'] in keys : self.renderer.place_block()
         
         # keyboard move
         self.player.moving_forward  = self.input_manager.MAPPINGS['w'] in keys
@@ -413,7 +405,6 @@ class GameController:
         self.player.moving_down     = self.input_manager.MAPPINGS['c'] in keys
         self.player.moving_up       = self.input_manager.MAPPINGS['space'] in keys
         self.player.jumping         = self.input_manager.MAPPINGS['space'] in keys
-
         
         if self.input_manager.MAPPINGS['tab'] in keys:  # toggle flight
             if not self._tab_was_pressed:

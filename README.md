@@ -1,27 +1,72 @@
 # terminal-minecraft
-Simple minecraft clone but it runs in the windows terminal.
+Simple minecraft clone but it runs in the terminal.
 Works by using the foreground+background trick with the half block character ("▄"), simulating two "pixels" per terminal character.
 As much as i tried to optimize it, it requires a decent cpu to run "normally", if you have a low-end pc, please check the settings and update the optimization values accordingly.
 Since the render is what causes most spikes, consider changing the render distance and increase the terminal font size for quick testing, though I recommend checking out the settings.
 Additionally, if you have above-medium / high end harware, also change the settings to the high ones for faster calculations, generation and rendering etcetc
 
 # showcase
-<img src="https://github.com/user-attachments/assets/558d6d46-7782-481e-aef4-ea3971560e06" width="400">
-<img src="https://github.com/user-attachments/assets/a728239c-0904-4313-9d9c-bc2aa7314bf1" width="400">
+![A screenshot of the program running under Windows in a terminal](./_docs/img/win_windowed.png)
+![A screenshot of the program running under Windows in full screen mode](./_docs/img/win_fullscreen.png)
+![A screenshot of the program running under X11 in a terminal](./_docs/img/x11_windowed.png)
 
-*windowed gameplay  /  fullscreen (with my lagoon hut, very pretty i know)*
+*windows windowed gameplay  /  fullscreen (with my lagoon hut, very pretty i know)  /  \*NIX style operating system with X11*
 
 NOTE: Beware that quality scales up with the window size and font size, but so does the impact on the cpu!
 
+# installation
+
+* First, make sure python 3 is installed.
+
+* Second, create a venv for the project (you can skip this on Windows): `python3 -m venv venv; source venv/bin/activate`
+
+* Third, use `pip install <packages>` to install the dependencies for your current OS:
+
+```
+All systems:
+
+Pillow
+numpy
+typing
+pynput
+colorama
+PyOpenGL
+pygame
+noise
+numba
+
+Only on Windows:
+win32gui
+win32api
+keyboard
+
+Only on X11:
+Xlib
+```
+
+# usage
+
+On windows, run the program inside a terminal with this command:
+```
+> python main.py
+```
+
+On unix-like operating systems, ensure you are in an X11 session (wayland is not supported, xwayland is untested, may not work) and run the program inside a terminal with this command:
+```
+$ python3 main.py 2> debug_log.txt
+```
+(the `2>` is a shell redirect for redirecting stderr into a log file. this not only logs errors but also keeps the terminal clean while playing. without this, all logging data would overlap onto the gameplay and cause visual issues.)
 
 # controls
-* mouse : camera look
-* WASD : movement
-* Ctrl^C : close  ( cleanup may take a few seconds )
+* W A S D : movement
+* mouse | arrow keys : camera look
+* space : jump
+* mouse buttons, INS/DEL : place/break blocks
+* ESC : close  ( cleanup may take a few seconds )
 * TAB : toggle flight mode
 * C : move down
 
-Notice: Beware that the mouse will be thread locked when chunk pregeneration finishes and will only be released when the program is closed
+**Notice:** Beware that the mouse (on X11 the keyboard too) will be thread locked when chunk pregeneration finishes and will only be released when the program is closed
 
 
 # updates
@@ -35,7 +80,7 @@ v 1.0.0 : Basic Clone with curses rendering
 * Voxel culling and frustum
 * total of 10 block types
 
-v 1.2.0  ( CURRENT )
+v 1.2.0
 * Showcase: https://www.youtube.com/watch?v=7TLsNwHLdWw&t
 * Smoother and lazyer chunk generation, load and unloading
 * Mesh caching and faster mesh updates
@@ -45,6 +90,12 @@ v 1.2.0  ( CURRENT )
 * Improved optimization settings for low-medium end pcs
 * Decent mouse look controller
 * Logo title thingy
+
+v 1.2.1  ( CURRENT )
+* Repository cleanup
+* Input handling support for X11-based systems (*nix operating systems / linux)
+* Camera movement via arrow keys support
+* Block breaking and placing via keyboard support
 
 # todo
 * ✗ Add dirty chunk memory
@@ -68,4 +119,4 @@ v 1.2.0  ( CURRENT )
 
 
 # diagram
-![Untitled Diagram drawio(1)](https://github.com/user-attachments/assets/6e2dacbf-65f1-4746-9931-352bf4dda993)
+![A diagram of the inner workings of this program](./_docs/img/diagram.png)

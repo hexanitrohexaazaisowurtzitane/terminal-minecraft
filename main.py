@@ -1,15 +1,26 @@
+import os
 import time
 import curses
+import sys
 import numpy as np
 import threading
+import signal
 import collections
 from typing import Set, Tuple, Optional
 import logging
 
-import keyboard
 import pynput.mouse
-import win32gui
-import win32api
+if sys.platform == "win32":
+    import keyboard
+    import win32gui
+    import win32api
+else:
+    # Assume X11
+    from Xlib import display, X
+    import Xlib.XK
+    d = display.Display()
+    s = d.screen()
+    root = s.root
 
 from render import TerminalRenderer
 from chunk  import ThreadedChunkManager
@@ -20,147 +31,226 @@ class InputManager:
     MAPPINGS = {
         'w': ord('w'), 's': ord('s'), 'a': ord('a'), 'd': ord('d'),
         'space': ord(' '), 'c': ord('c'), 'tab': 9, 'q': ord('q'),
-
         '1': ord('1'), '2': ord('2'), '3': ord('3'), '4': ord('4'),
         '5': ord('5'), '6': ord('6'), '7': ord('7'), '8': ord('8'),
-        '9': ord('9')
+        '9': ord('9'),
+        'up': -1, 'down': -2, 'left': -3, 'right': -4,
+        'insert': -11,
+        'delete': -10,
     }
-    
+
     def __init__(self):
-        self.keys_pressed:  Set[int] = set()
+        self.keys_pressed: Set[int] = set()
         self.mouse_buttons: Set[int] = set()
-        
-        self.mouse_clicks:  Set[int] = set()
+        self.mouse_clicks: Set[int] = set()
         self.mouse_delta = np.zeros(2)
         self.lock = threading.Lock()
         self.running = True
-        
-        
+
         self.mouse_locked = False
-        self.terminal_center = (0, 0)
+        self.terminal_center = (200, 200)
         self.terminal_hwnd = None
-        
+
         self._setup_listeners()
-    
+
     def _setup_listeners(self):
-        # keyboard listener
-        for key, code in self.MAPPINGS.items():
-            keyboard.on_press_key(key,   lambda e, k=code: self._on_key_press(k))
-            keyboard.on_release_key(key, lambda e, k=code: self._on_key_release(k))
-        
-        # mouse listener
+        if sys.platform == "win32":
+            for key, code in self.MAPPINGS.items():
+                keyboard.on_press_key(key,   lambda e, k=code: self._on_key_press(k))
+                keyboard.on_release_key(key, lambda e, k=code: self._on_key_release(k))
+            keyboard.on_press_key("esc", lambda e: self._exit())
+            keyboard.on_press_key("ctrl+c", lambda e: self._exit())
+        else:
+            self.keyboard_thread = threading.Thread(target=self._x11_input_loop, daemon=True)
+            self.keyboard_thread.start()
+
         self.mouse_listener = pynput.mouse.Listener(
             on_click=self._on_mouse_click,
             suppress=False
         )
         self.mouse_listener.start()
-        
-        # mouse lock thread
+
         self.lock_thread = threading.Thread(target=self._mouse_lock_loop, daemon=True)
         self.lock_thread.start()
-    
+
     def _on_key_press(self, key_code: int):
-        with self.lock: self.keys_pressed.add(key_code)
-    
+        with self.lock:
+            self.keys_pressed.add(key_code)
+        if key_code in (3, 27):  # CTRL+C or ESC
+            self._exit()
+
     def _on_key_release(self, key_code: int):
-        with self.lock: self.keys_pressed.discard(key_code)
-    
+        with self.lock:
+            self.keys_pressed.discard(key_code)
+
+    def _x11_input_loop(self):
+        keysyms_map = {}
+        for k, v in self.MAPPINGS.items():
+            sym = Xlib.XK.string_to_keysym(k)
+            if sym:
+                keysyms_map[sym] = v
+        keysyms_map[Xlib.XK.XK_Up] = -1
+        keysyms_map[Xlib.XK.XK_Down] = -2
+        keysyms_map[Xlib.XK.XK_Left] = -3
+        keysyms_map[Xlib.XK.XK_Right] = -4
+
+        keysyms_map[Xlib.XK.XK_Insert] = -11
+        keysyms_map[Xlib.XK.XK_Delete] = -10
+
+        # Also watch for raw ESC and Ctrl+C
+        keysyms_map[Xlib.XK.XK_Escape] = 27
+        keysyms_map[Xlib.XK.XK_C] = ord('c')
+
+        root.grab_keyboard(True, X.GrabModeAsync, X.GrabModeAsync, X.CurrentTime)
+        root.grab_pointer(True, X.PointerMotionMask | X.ButtonPressMask | X.ButtonReleaseMask,
+                          X.GrabModeAsync, X.GrabModeAsync, X.NONE, X.NONE, X.CurrentTime)
+
+        while self.running:
+            while d.pending_events():
+                e = d.next_event()
+                if e.type == X.KeyPress or e.type == X.KeyRelease:
+                    keysym = d.keycode_to_keysym(e.detail, 0)
+                    key_code = keysyms_map.get(keysym)
+                    if key_code is not None:
+                        if key_code in (3, 27):
+                            self._exit()
+                        elif key_code in (-1, -2, -3, -4):
+                            with self.lock:
+                                if key_code == -1: self.mouse_delta[1] -= 3
+                                elif key_code == -2: self.mouse_delta[1] += 3
+                                elif key_code == -3: self.mouse_delta[0] -= 3
+                                elif key_code == -4: self.mouse_delta[0] += 3
+                        else:
+                            if e.type == X.KeyPress:
+                                self._on_key_press(key_code)
+                            else:
+                                self._on_key_release(key_code)
+                elif e.type == X.MotionNotify:
+                    dx = e.root_x - self.terminal_center[0]
+                    dy = e.root_y - self.terminal_center[1]
+                    if dx != 0 or dy != 0:
+                        with self.lock:
+                            self.mouse_delta[0] += dx * 0.4
+                            self.mouse_delta[1] += dy * 0.4
+                        root.warp_pointer(self.terminal_center[0], self.terminal_center[1])
+                        d.sync()
+                elif e.type in (X.ButtonPress, X.ButtonRelease):
+                    btn = e.detail
+                    if btn == 3:
+                        btn = 2  # remap X11 right button to Windows style
+                    elif btn == 2:
+                        btn = 3  # remap X11 middle button to Windows style (optional)
+                    
+                    if btn in (1, 2):  # track only left and right for now
+                        with self.lock:
+                            if e.type == X.ButtonPress:
+                                self.mouse_buttons.add(btn)
+                                self.mouse_clicks.add(btn)
+                            else:
+                                self.mouse_buttons.discard(btn)
+            time.sleep(0.001)
 
     def _on_mouse_click(self, x: int, y: int, button, pressed: bool):
+        if sys.platform != "win32":
+            return
         button_map = {
-            pynput.mouse.Button.left:   1,
-            pynput.mouse.Button.right:  2,
+            pynput.mouse.Button.left: 1,
+            pynput.mouse.Button.right: 2,
             pynput.mouse.Button.middle: 3,
         }
-        
         if button in button_map:
             button_id = button_map[button]
             with self.lock:
                 if pressed:
                     self.mouse_buttons.add(button_id)
                     self.mouse_clicks.add(button_id)
-                else: self.mouse_buttons.discard(button_id)
-    
+                else:
+                    self.mouse_buttons.discard(button_id)
+
     def _find_window(self) -> bool:
-        """find the terminal window and get its center"""
-        hwnd = win32gui.GetForegroundWindow()
-        rect = win32gui.GetWindowRect(hwnd)
-        center_x = (rect[0] + rect[2]) // 2
-        center_y = (rect[1] + rect[3]) // 2
-        
+
+        # Fallback cursor default location
+        center_x = 200
+        center_y = 200
+
+        if sys.platform == "win32":
+            hwnd = win32gui.GetForegroundWindow()
+            rect = win32gui.GetWindowRect(hwnd)
+            center_x = (rect[0] + rect[2]) // 2
+            center_y = (rect[1] + rect[3]) // 2
+        else:
+            hwnd = d.get_input_focus().focus
+            geom = hwnd.get_geometry()
+            win_x, win_y = hwnd.translate_coords(root, 0, 0)
+            rect = (win_x, win_y, win_x + geom.width, win_y + geom.height)
+
         self.terminal_hwnd = hwnd
         self.terminal_center = (center_x, center_y)
         return True
-    
+
     def _mouse_lock_loop(self, counter=0):
-        """lock mouse to terminal center thread"""
         while self.running:
             if self.mouse_locked and self.terminal_hwnd:
                 try:
-                    # check window focus periodically
                     if counter % 30 == 0:
-                        current_hwnd = win32gui.GetForegroundWindow()
-                        if current_hwnd !=  self.terminal_hwnd:
+                        if sys.platform == "win32":
+                            current_hwnd = win32gui.GetForegroundWindow()
+                        else:
+                            current_hwnd = d.get_input_focus().focus
+                        if current_hwnd != self.terminal_hwnd:
                             continue
-                    
-                    # get mouse delta nd reset
-                    current_pos = win32api.GetCursorPos()
-                    dx = current_pos[0] - self.terminal_center[0]
-                    dy = current_pos[1] - self.terminal_center[1]
-                    
-                    if dx != 0 or dy != 0:
-                        with self.lock:
-                            self.mouse_delta[0] += dx * 0.4
-                            self.mouse_delta[1] += dy * 0.4
-                        
-                        win32api.SetCursorPos(self.terminal_center)
-                        
-                except Exception: self.mouse_locked = False
-            
+                    if sys.platform == "win32":
+                        current_pos = win32api.GetCursorPos()
+                        dx = current_pos[0] - self.terminal_center[0]
+                        dy = current_pos[1] - self.terminal_center[1]
+                        if dx != 0 or dy != 0:
+                            with self.lock:
+                                self.mouse_delta[0] += dx * 0.4
+                                self.mouse_delta[1] += dy * 0.4
+                            win32api.SetCursorPos(self.terminal_center)
+                except Exception:
+                    self.mouse_locked = False
             counter += 1
             time.sleep(0.008)
-    
+
     def lock_mouse(self):
         if self._find_window():
             self.mouse_locked = True
-            win32api.SetCursorPos(self.terminal_center)
-    
+            if sys.platform == "win32":
+                win32api.SetCursorPos(self.terminal_center)
+            else:
+                root.warp_pointer(200, 200)
+                d.sync()
+
     def unlock_mouse(self):
         self.mouse_locked = False
 
-    # helds
     def get_keys(self) -> Set[int]:
         with self.lock:
             return self.keys_pressed.copy()
+
     def get_mouse_buttons(self) -> Set[int]:
         with self.lock:
             return self.mouse_buttons.copy()
-    
+
     def get_mouse_clicks(self) -> Set[int]:
-        """get single mouse clicks (1time events)"""
         with self.lock:
             clicks = self.mouse_clicks.copy()
             self.mouse_clicks.clear()
             return clicks
-    
+
     def get_mouse_delta(self) -> Tuple[float, float]:
-        """get and reset mouse movement delta"""
         with self.lock:
             delta = tuple(self.mouse_delta * 0.85)
             self.mouse_delta *= 0.1
             return delta
-    
-    def cleanup(self):
-        self.running = False
-        self.unlock_mouse()
-        keyboard.unhook_all()
-        self.mouse_listener.stop()
-        if self.lock_thread.is_alive():
-            self.lock_thread.join(timeout=1.0)
+
+    def _exit(self):
+        print("Exiting on input.")
+        os.kill(os.getpid(), signal.SIGKILL)
 
 
 class ChunkUpdateManager:
-
     
     def __init__(self, chunk_manager, 
     update_interval=1.0, min_movement_threshold=6.0, min_fps_threshold=15.0):
@@ -277,12 +367,6 @@ class GameController:
         mouse_buttons = self.input_manager.get_mouse_buttons()
         mouse_clicks = self.input_manager.get_mouse_clicks()
         
-        """
-        if self.input_manager.MAPPINGS['q'] in keys:
-            self.running = False
-            return
-        """
-        
         # hotbar
         for i in range(1, 10):
             if self.input_manager.MAPPINGS[str(i)] in keys:
@@ -303,11 +387,14 @@ class GameController:
             self.renderer.pitch -= dy * self.renderer.mouse_sensitivity
             self.renderer.pitch = np.clip(self.renderer.pitch, -89.0, 89.0)
             self.renderer.update_camera_vectors()
-        
 
 
-        if 1 in mouse_clicks: self.renderer.break_block()
-        if 2 in mouse_clicks: self.renderer.place_block()
+        # block manipulation
+        if 1 in mouse_clicks : self.renderer.break_block()
+        if 2 in mouse_clicks : self.renderer.place_block()
+
+        if self.input_manager.MAPPINGS['delete'] in keys : self.renderer.break_block()
+        if self.input_manager.MAPPINGS['insert'] in keys : self.renderer.place_block()
         
         # keyboard move
         self.player.moving_forward  = self.input_manager.MAPPINGS['w'] in keys
@@ -318,7 +405,6 @@ class GameController:
         self.player.moving_down     = self.input_manager.MAPPINGS['c'] in keys
         self.player.moving_up       = self.input_manager.MAPPINGS['space'] in keys
         self.player.jumping         = self.input_manager.MAPPINGS['space'] in keys
-
         
         if self.input_manager.MAPPINGS['tab'] in keys:  # toggle flight
             if not self._tab_was_pressed:

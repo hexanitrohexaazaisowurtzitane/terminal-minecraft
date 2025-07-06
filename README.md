@@ -46,23 +46,16 @@ v 1.2.0  ( CURRENT )
 * Decent mouse look controller
 * Logo title thingy
 
-# todo
-* ✗ Add dirty chunk memory
+# todo [ ✓s will be uploaded next update ]
+* ✓ Add dirty chunk memory 
 * ✗ Add world save and load features
-* ✓ Fix stupid ahh raytrace offsets
-* ✓ Reduce memory load on mesh render
-* ✓ Cache colors and rendered data, draw only changes
-* ✓ Cache rencently visited world data
-* ✓ Use lazy, position based generatiors with priority for less intense generation
-* ✓ Fix color combination out of bounds artifacts
 * ✗ Add an actuall title screen
 * ✗ Add propper gui like pause menu, settings, etc
 * ✗ Add an actuall chat and achievements
 * ✗ Fix water broken face culling at chunk edges
-* ✗ Paint x,-x and z,-z faces of different colors to distinguish them
-* ✓ Block hotbar
-* ✗ Use xterm color codes instead of rgb->xterm convertion
-* ✗ Improved on preformance and caching
+* ✓ Paint x,-x and z,-z faces of different colors to distinguish them
+* ✓ Improved render buffer with color quantization
+* ✓ Improved on preformance and caching
 
 
 

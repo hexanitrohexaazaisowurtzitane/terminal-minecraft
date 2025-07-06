@@ -16,6 +16,33 @@ NOTE: Beware that quality scales up with the window size and font size, but so d
 
 # installation
 
+* First, make sure python 3 is installed.
+
+* Second, create a venv for the project (you can skip this on Windows): `python3 -m venv venv; source venv/bin/activate`
+
+* Third, use `pip install <packages>` to install the dependencies for your current OS:
+
+```
+All systems:
+
+Pillow
+numpy
+typing
+pynput
+colorama
+PyOpenGL
+pygame
+noise
+numba
+
+Only on Windows:
+win32gui
+win32api
+keyboard
+
+Only on X11:
+Xlib
+```
 
 # usage
 

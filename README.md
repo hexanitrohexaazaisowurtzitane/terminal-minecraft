@@ -61,6 +61,7 @@ v 1.2.0  ( CURRENT )
 * ✗ Fix water broken face culling at chunk edges
 * ✗ Paint x,-x and z,-z faces of different colors to distinguish them
 * ✓ Block hotbar
+* ✗ Use xterm color codes instead of rgb->xterm convertion
 * ✗ Improved on preformance and caching
 
 

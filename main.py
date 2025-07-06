@@ -1,5 +1,6 @@
 import time
 import curses
+import sys
 import numpy as np
 import threading
 import collections
@@ -8,8 +9,16 @@ import logging
 
 import keyboard
 import pynput.mouse
-import win32gui
-import win32api
+if sys.platform == "win32":
+    import win32gui
+    import win32api
+else:
+    # Assume X11
+    from Xlib import display, X
+    import Xlib.XK
+    d = display.Display()
+    s = d.screen()
+    root = s.root
 
 from render import TerminalRenderer
 from chunk  import ThreadedChunkManager
@@ -83,8 +92,16 @@ class InputManager:
     
     def _find_window(self) -> bool:
         """find the terminal window and get its center"""
-        hwnd = win32gui.GetForegroundWindow()
-        rect = win32gui.GetWindowRect(hwnd)
+        if sys.platform == "win32":
+            hwnd = win32gui.GetForegroundWindow()
+            rect = win32gui.GetWindowRect(hwnd)
+        else:
+            # X11 equivalent: get focused window and geometry
+            hwnd = d.get_input_focus().focus
+            geom = hwnd.get_geometry()
+            win_x, win_y = hwnd.translate_coords(root, 0, 0)
+            rect = (win_x, win_y, win_x + geom.width, win_y + geom.height)
+
         center_x = (rect[0] + rect[2]) // 2
         center_y = (rect[1] + rect[3]) // 2
         
@@ -99,12 +116,23 @@ class InputManager:
                 try:
                     # check window focus periodically
                     if counter % 30 == 0:
-                        current_hwnd = win32gui.GetForegroundWindow()
+
+                        if sys.platform == "win32":
+                            current_hwnd = win32gui.GetForegroundWindow()
+                        else:
+                            current_hwnd = d.get_input_focus().focus
+                        
                         if current_hwnd !=  self.terminal_hwnd:
                             continue
                     
                     # get mouse delta nd reset
-                    current_pos = win32api.GetCursorPos()
+
+                    if sys.platform == "win32":
+                        current_pos = win32api.GetCursorPos()
+                    else:
+                        pointer = root.query_pointer()
+                        current_pos = (pointer.root_x, pointer.root_y)
+
                     dx = current_pos[0] - self.terminal_center[0]
                     dy = current_pos[1] - self.terminal_center[1]
                     
@@ -112,9 +140,13 @@ class InputManager:
                         with self.lock:
                             self.mouse_delta[0] += dx * 0.4
                             self.mouse_delta[1] += dy * 0.4
-                        
-                        win32api.SetCursorPos(self.terminal_center)
-                        
+
+                        if sys.platform == "win32":
+                            win32api.SetCursorPos(self.terminal_center)
+                        else:
+                            root.warp_pointer(self.terminal_center[0], self.terminal_center[1])
+                            d.sync()
+
                 except Exception: self.mouse_locked = False
             
             counter += 1
@@ -123,7 +155,12 @@ class InputManager:
     def lock_mouse(self):
         if self._find_window():
             self.mouse_locked = True
-            win32api.SetCursorPos(self.terminal_center)
+
+            if sys.platform == "win32":
+                win32api.SetCursorPos(self.terminal_center)
+            else:
+                root.warp_pointer(self.terminal_center[0], self.terminal_center[1])
+                d.sync()
     
     def unlock_mouse(self):
         self.mouse_locked = False

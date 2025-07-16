@@ -6,10 +6,10 @@ Since the render is what causes most spikes, consider changing the render distan
 Additionally, if you have above-medium / high end harware, also change the settings to the high ones for faster calculations, generation and rendering etcetc
 
 # showcase
-<img src="https://github.com/user-attachments/assets/558d6d46-7782-481e-aef4-ea3971560e06" width="400">
+<img src="https://github.com/user-attachments/assets/e1a3d29f-60dd-47ff-8444-a4691e17174f" width="400">
 <img src="https://github.com/user-attachments/assets/a728239c-0904-4313-9d9c-bc2aa7314bf1" width="400">
 
-*windowed gameplay  /  fullscreen (with my lagoon hut, very pretty i know)*
+*textured gameplay  /  my lagoon hut, very pretty i know*
 
 NOTE: Beware that quality scales up with the window size and font size, but so does the impact on the cpu!
 
@@ -45,18 +45,6 @@ v 1.2.0  ( CURRENT )
 * Improved optimization settings for low-medium end pcs
 * Decent mouse look controller
 * Logo title thingy
-
-# todo [ ✓s will be uploaded next update ]
-* ✓ Add dirty chunk memory 
-* ✗ Add world save and load features
-* ✗ Add an actuall title screen
-* ✗ Add propper gui like pause menu, settings, etc
-* ✗ Add an actuall chat and achievements
-* ✗ Fix water broken face culling at chunk edges
-* ✓ Paint x,-x and z,-z faces of different colors to distinguish them
-* ✓ Improved render buffer with color quantization
-* ✓ Improved on preformance and caching
-
 
 
 

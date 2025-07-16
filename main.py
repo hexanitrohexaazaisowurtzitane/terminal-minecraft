@@ -14,6 +14,7 @@ import win32api
 from render import TerminalRenderer
 from chunk  import ThreadedChunkManager
 from player import PlayerController
+import title as titler
 
 
 class InputManager:
@@ -23,7 +24,9 @@ class InputManager:
 
         '1': ord('1'), '2': ord('2'), '3': ord('3'), '4': ord('4'),
         '5': ord('5'), '6': ord('6'), '7': ord('7'), '8': ord('8'),
-        '9': ord('9')
+        '9': ord('9'),
+
+        'j': ord('j')
     }
     
     def __init__(self):
@@ -128,6 +131,11 @@ class InputManager:
     def unlock_mouse(self):
         self.mouse_locked = False
 
+    def toggle_lock(self):
+        if self.mouse_locked:
+            self.unlock_mouse()
+        else: self.lock_mouse()
+
     # helds
     def get_keys(self) -> Set[int]:
         with self.lock:
@@ -218,7 +226,7 @@ class ChunkUpdateManager:
 class GameController:
 
     
-    def __init__(self):
+    def __init__(self, update_interval=1.0, render_distance=3, min_fps_threshold=5.0, target_fps=60.0, world_name=None, texture_name="basic"):
         """
         For non-dev users, 
         If you have a medium-high end hardware, adjust the following settings:
@@ -234,16 +242,18 @@ class GameController:
         logging.info("The following settings are designed for low end hardware. Adjust as needed.")
         # basic chunk update/gen time downgrade for smooth controls
         # adjust based on hardware  # slow gen     # fast gen
-        self.update_interval        = 1.0          # 0.2
-        self.min_movement_threshold = 6.0          # 4.0
-        self.min_fps_threshold      = 20.0         # 15.0
+        self.update_interval        = update_interval          # 0.2
+        self.render_distance        = render_distance          # 3
+        self.min_fps_threshold      = min_fps_threshold        # 15.0
         
         self._log_specs(self.__dict__.items())
         
         self.chunk_manager = ThreadedChunkManager(
             chunk_size      = 16, # 16  # chunk size
-            render_distance = 3,  # 5   # x chunk radius loaded to render
-            max_workers     = 6   # 10  # x worker threads for chunk generation
+            render_distance = self.render_distance,  # x chunk radius loaded to render
+            max_workers     = 6,  # 10  # x worker threads for chunk generation
+            world_name      = world_name,
+            texture_name    = texture_name
         )
         self.renderer = TerminalRenderer(self.chunk_manager)
         self.chunk_manager.set_log_callback(self.renderer.message) # TODO
@@ -253,7 +263,7 @@ class GameController:
         self.chunk_updater = ChunkUpdateManager(
             self.chunk_manager,
             self.update_interval,
-            self.min_movement_threshold,
+            6.0,  # min_movement_threshold - keeping default value
             self.min_fps_threshold
         )
         
@@ -261,9 +271,14 @@ class GameController:
         self.running = True
         self.last_update_time = time.time()
         self._tab_was_pressed = False
+        self._last_mouse_lock_toggle = 0  # Add this line for debounce
 
-        self.target_fps = 60.0
-        self.smooth_fps = 60.0
+        self.target_fps = target_fps
+        self.smooth_fps = target_fps
+
+        self.pause_menu_active = False
+        self.pause_menu_buttons = ["Resume", "Quit"]
+        self.pause_menu_selected = 0  # 0: Resume, 1: Quit
 
     def _log_specs(self, items, out=[]):
         for k, v in items: #self.__dict__.items():
@@ -271,15 +286,87 @@ class GameController:
             out.append(f"{k.title()}={v}")
         logging.info("Chunk Updates: " + " ".join(out))
     
+    def _get_mouse_gl_coords(self):
+        mouse_x, mouse_y = win32api.GetCursorPos()
+        if self.input_manager.terminal_hwnd:
+            # client area -> coordinates
+            client_pt = win32gui.ScreenToClient(self.input_manager.terminal_hwnd, (mouse_x, mouse_y))
+            client_x, client_y = client_pt
+            # size
+            left, top, right, bottom = win32gui.GetClientRect(self.input_manager.terminal_hwnd)
+            client_w = right - left
+            client_h = bottom - top
+            # map to opengl size
+            gl_mouse_x = int(client_x * self.renderer.gl_width / client_w)
+            gl_mouse_y = int((client_h - client_y) * self.renderer.gl_height / client_h)
+            return gl_mouse_x, gl_mouse_y+2
+        return -1, -1
+
     def _handle_input(self):
         
+        if self.pause_menu_active:
+            keys = self.input_manager.get_keys()
+            mouse_clicks = self.input_manager.get_mouse_clicks()
+            gl_mouse_x, gl_mouse_y = self._get_mouse_gl_coords()
+
+            # mouse hover
+            hover_idx = self.renderer.get_pause_menu_hovered(gl_mouse_x, gl_mouse_y, len(self.pause_menu_buttons))
+            if hover_idx is not None: self.pause_menu_selected = hover_idx
+
+
+            # mous click
+            if 1 in mouse_clicks and hover_idx is not None:
+                if hover_idx == 1:
+                    self.pause_menu_active = False
+                    self.input_manager.lock_mouse()
+                    self.renderer.show_block_name = True
+                elif hover_idx == 0:
+                    self.running = False
+                return
+            
+            # pause screen
+            if self.input_manager.MAPPINGS['q'] in keys:
+                
+                now = time.time()
+                if not hasattr(self, '_last_mouse_lock_toggle'):
+                    self._last_mouse_lock_toggle = 0
+                if now - self._last_mouse_lock_toggle > 0.5:
+                    self.pause_menu_active = False
+                    self.input_manager.lock_mouse()
+                    self._last_mouse_lock_toggle  = now
+                    self.renderer.show_block_name = True
+                return
+            return
+
+
+        # -- normal input --
         keys = self.input_manager.get_keys()
         mouse_buttons = self.input_manager.get_mouse_buttons()
-        mouse_clicks = self.input_manager.get_mouse_clicks()
+        mouse_clicks  = self.input_manager.get_mouse_clicks()
+        # pause toggle
+        if self.input_manager.MAPPINGS['q'] in keys:
+            now = time.time()
+            if not hasattr(self, '_last_mouse_lock_toggle'):
+                self._last_mouse_lock_toggle  = 0
+                self.renderer.show_block_name = True
+            if now - self._last_mouse_lock_toggle > 0.5:
+                self.pause_menu_active = True
+                self.input_manager.unlock_mouse()
+                self._last_mouse_lock_toggle  = now
+                self.renderer.show_block_name = False
+            return
         
         """
         if self.input_manager.MAPPINGS['q'] in keys:
             self.running = False
+            return
+        """
+        
+        """
+        # Clear modifications (for testing)
+        if self.input_manager.MAPPINGS['q'] in keys:
+            self.chunk_manager.clear_all_modifications()
+            self.renderer.message("Cleared all modifications")
             return
         """
         
@@ -288,12 +375,6 @@ class GameController:
             if self.input_manager.MAPPINGS[str(i)] in keys:
                 #self.renderer.selected_block = i
                 self.renderer.set_selected_block(i)
-                """block_names = {
-                    1: "Grass",  2: "Dirt",   3: "Stone",
-                    4: "Log",    5: "Wood",   6: "Leaves",
-                    7: "Sand",   8: "Cactus", 9: "Water",
-                }
-                self.renderer.message(f"Selected {block_names[i]}")"""
                 break
         
         # mouse look
@@ -362,7 +443,12 @@ class GameController:
         
         
         self.renderer.draw_scene()
-        self.renderer.draw_gl_ui()
+        if self.pause_menu_active:
+            gl_mouse_x, gl_mouse_y = self._get_mouse_gl_coords()
+            hover_idx = self.renderer.get_pause_menu_hovered(gl_mouse_x, gl_mouse_y, len(self.pause_menu_buttons))
+            self.renderer.draw_pause_menu(self.pause_menu_selected, self.pause_menu_buttons, mouse_hover_idx=hover_idx, mouse_pos=(gl_mouse_x, gl_mouse_y))
+        elif self.renderer.toggle_ui:
+            self.renderer.draw_gl_ui()
         self.renderer.render_to_buffer()
         self.renderer.display_buffer()
         curses.doupdate()
@@ -408,17 +494,89 @@ class GameController:
         finally:  self._cleanup()
     
     def _cleanup(self):
+        if hasattr(self.chunk_manager, 'chunk_modifications'):
+            for chunk_coord in self.chunk_manager.chunk_modifications:
+                self.chunk_manager.save_chunk_modifications(chunk_coord)
+            logging.info("Saved all chunk modifications")
+        #self.chunk_manager.clear_all_modifications()
+        #logging.info("Cleared all chunk modifications")
         self.input_manager.cleanup()
         self.chunk_manager.cleanup()
         self.renderer.cleanup()
 
+# -- color display --
+# if you're developing a texture, use this to get all available values!
+def xterm_index_to_rgb(index):
+    if index < 16:
+        # standard colors, you can look up a table
+        return (0.0, 0.0, 0.0)
+    index -= 16
+    r = (index // 36) % 6
+    g = (index // 6) % 6
+    b = index % 6
 
-def main():
-    game = GameController()
-    game.run()
+    def level(n):
+        return 0 if n == 0 else 95 + 40 * (n - 1)
 
+    rf = level(r) / 255.0
+    gf = level(g) / 255.0
+    bf = level(b) / 255.0
+
+
+    # round 0.01
+    import math
+    rf = math.ceil(rf * 100) / 100.0
+    gf = math.ceil(gf * 100) / 100.0
+    bf = math.ceil(bf * 100) / 100.0
+    return (rf, gf, bf)
+
+
+
+def print_xterm_color_palette():
+    # print all xterm colors
+    for i in range(16):
+        for j in range(16):
+            color = i * 16 + j
+            print(f"\033[48;5;{color}m ", end="")
+        print("\033[0m", end="")
+    print("\033[0m")
+    # NOTE: Uncomment this to display all color values
+    """for i in range(16):
+        for j in range(16):
+            color = i * 16 + j
+            print(f"\033[48;5;{color}m RGB: {xterm_index_to_rgb(color)}", end="")
+        print(f"\033[0m", end="")
+    print("\033[0m")
+"""
 
 
 if __name__ == "__main__":
-    import title
-    main()
+    print("    -- NEW INSTANCE -- ")
+    import multiprocessing
+    multiprocessing.freeze_support()
+    import argparse
+    import json
+    from pathlib import Path
+
+    # args for laucher
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--chunk_update_intreval", type=float, default= 1.0    )
+    parser.add_argument("--render_distance",       type=int,   default= 3      )
+    parser.add_argument("--min_fps_threshold",     type=float, default= 5.0    )
+    parser.add_argument("--target_fps",            type=float, default=  60.0  )
+    parser.add_argument("--texture",               type=str,   default= "basic")
+    parser.add_argument("--world",                 type=str,   default= None   )
+    args = parser.parse_args()
+    
+
+    print_xterm_color_palette()
+    titler.generate()
+    game = GameController(
+        update_interval=args.chunk_update_intreval,
+        render_distance=args.render_distance,
+        min_fps_threshold=args.min_fps_threshold,
+        target_fps=args.target_fps,
+        world_name=args.world,
+        texture_name=args.texture
+    )
+    game.run()

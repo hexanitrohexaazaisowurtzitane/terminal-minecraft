@@ -53,7 +53,7 @@ class TerminalRenderer:
         
         self.camera_position = np.array([0.0, 20.0, 0.0], dtype=np.float32)
         self.camera_front    = np.array([0.0, 0.0, -1.0], dtype=np.float32)
-        self.camera_up       = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        self.camera_up       = np.array([0.0, 1.0, 0.0],  dtype=np.float32)
         self.movement_speed  = 0.5
         
         self.left_dragging = False
@@ -80,9 +80,9 @@ class TerminalRenderer:
         from chunk import BlockType
         self.block_colors = {
             BlockType.GRASS:  (0.0, 0.8, 0.0),
-            BlockType.DIRT:   (0.6, 0.4, 0.2),
+            BlockType.DIRT:   (0.588, 0.416, 0.208),
             BlockType.STONE:  (0.7, 0.7, 0.7),
-            BlockType.LOG:    (0.6, 0.4, 0.2),
+            BlockType.LOG:    (0.5, 0.3, 0.1),
             BlockType.WOOD:   (0.7, 0.5, 0.3),
             BlockType.LEAVES: (0.0, 0.6, 0.0),
             BlockType.SAND:   (0.9, 0.8, 0.6),
@@ -108,11 +108,15 @@ class TerminalRenderer:
         
         self.update_camera_vectors()
         self._init_color_map()
+        self._precompute_color_lookup()
 
         self.chat = ["Press '\\' to open the chat"]
         self.highlight_range   = 8.0  # reach distance
         self.highlighted_block = None
         self.highlighted_face  = None
+
+        self.toggle_ui = True
+        self.show_block_name = True 
         
 
 
@@ -151,6 +155,20 @@ class TerminalRenderer:
                     g_val = 0 if g == 0 else (40 + g * 40) if g < 5 else 255
                     b_val = 0 if b == 0 else (40 + b * 40) if b < 5 else 255
                     self.xterm_colors.append((r_val, g_val, b_val))
+    
+    def _precompute_color_lookup(self):
+        """Precompute a 16x16x16 RGB lookup table for fast xterm color index mapping."""
+        levels = 16
+        lookup = np.zeros((levels, levels, levels), dtype=np.uint8)
+        color_array = np.array(self.xterm_colors, dtype=np.int32)
+        for r in range(levels):
+            for g in range(levels):
+                for b in range(levels):
+                    rgb = np.array([r, g, b]) * 255 // (levels - 1)
+                    distances = np.sum((color_array - rgb) ** 2, axis=1)
+                    best_idx = np.argmin(distances) + 16
+                    lookup[r, g, b] = best_idx
+        self.color_lookup = lookup
     
 
 
@@ -348,11 +366,9 @@ class TerminalRenderer:
         np.copyto(self.pixel_array, np.frombuffer(pixel_data, dtype=np.uint8).reshape(self.gl_height, self.gl_width, 3))
         self.pixel_array = np.flipud(self.pixel_array)
     
-
-
-
+    """  old buffer
     def display_buffer(self):
-        """Displays converted opengl render data into w*2h pixel art array using colored "▄" bg, fg """
+        
         # TODO: save memory by using full block char aswell
         status_lines = 0  # nomore
         screen_changed = False
@@ -394,7 +410,90 @@ class TerminalRenderer:
                     except curses.error: pass
         
         self._draw_ui(screen_changed)
+    """
+    def display_buffer(self):
+        # 32 levels of color quantization
+        """Displays converted opengl render data into w*2h pixel art array using colored "▄" bg, fg """
+        screen_changed = False
+        
+        # screen dimensions
+        h = self.display_height
+        w = self.display_width
+        y2_max = min(h * 2, self.pixel_array.shape[0])
+        actual_h = y2_max // 2
 
+        """if actual_h <= status_lines:
+            if self.toggle_ui:
+                self._draw_ui(screen_changed)
+            return"""
+
+        # get visible pixels
+        visible_data = self.pixel_array[:y2_max, :w]
+        
+        # split screen rows
+        top_rows = visible_data[1::2] / 255.0  # odd 
+        bot_rows = visible_data[0::2] / 255.0  # even
+        
+        min_rows = min(top_rows.shape[0], bot_rows.shape[0])
+        top_rows = top_rows[:min_rows]
+        bot_rows = bot_rows[:min_rows]
+
+        # color conversion  ( lookupp table )
+        def rgb_to_color_indices_vectorized(rgb_data):
+            quantized = np.clip(np.round(rgb_data * 15), 0, 15).astype(np.uint8)
+            indices = self.color_lookup[quantized[..., 0], quantized[..., 1], quantized[..., 2]]
+            return indices
+
+        # convert all at once
+        top_color_indices = rgb_to_color_indices_vectorized(top_rows)
+        bot_color_indices = rgb_to_color_indices_vectorized(bot_rows)
+
+        # vectorize pairs
+        def get_color_pairs_vectorized(top_colors, bot_colors):
+            pairs = []
+            for t_row, b_row in zip(top_colors, bot_colors):
+                row_pairs = [self.get_color_pair(t, b) for t, b in zip(t_row, b_row)]
+                pairs.append(row_pairs)
+            return pairs
+
+        all_pairs = get_color_pairs_vectorized(top_color_indices, bot_color_indices)
+
+        # run length encoding
+        for y in range(0, min(h, actual_h)):
+            row_idx = y
+            if row_idx >= len(all_pairs):
+                break
+                
+            pairs = all_pairs[row_idx]
+            pairs_tuple = tuple(pairs)
+            
+            # is dirty?
+            if y not in self.terminal_display_cache or self.terminal_display_cache[y] != pairs_tuple:
+                self.terminal_display_cache[y] = pairs_tuple
+                screen_changed = True
+                
+                
+                pairs_array = np.array(pairs)
+                
+                # find dirty values
+                changes = np.concatenate(([True], pairs_array[1:] != pairs_array[:-1], [True]))
+                change_indices = np.where(changes)[0]
+                
+                
+
+
+                for i in range(len(change_indices) - 1):
+                    start = change_indices[i]
+                    end = change_indices[i + 1]
+                    run_length = end - start
+                    
+                    try:
+                        self.stdscr.addstr(y, start, '▄' * run_length, curses.color_pair(pairs[start]))
+                    except curses.error:
+                        pass
+
+        if self.toggle_ui:
+            self._draw_ui(screen_changed)
     
     def _draw_ui(self, screen_changed):
         self.frame_count += 1
@@ -413,13 +512,28 @@ class TerminalRenderer:
             chunk_x, chunk_z = self.chunk_manager.get_chunk_coords_for_position(pos)
             stats = self.chunk_manager.stats
             
+            # Get modification stats
+            mod_stats = self.chunk_manager.get_modification_stats()
+            
+            # Check if current chunk has modifications
+            current_chunk = (chunk_x, chunk_z)
+            current_chunk_dirty = self.chunk_manager.is_chunk_dirty(current_chunk)
+            dirty_status = "DIRTY" if current_chunk_dirty else "CLEAN"
+            
             # text overlay
             self.stdscr.addnstr(0, 0, f"FPS: {self.fps:.1f} | Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) | Yaw: {self.yaw:.1f}° Pitch: {self.pitch:.1f}°", self.term_width - 1)
-            self.stdscr.addnstr(1, 0, f"Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) | Chunk: [{chunk_x}, {chunk_z}]",                                       self.term_width - 1)
+            self.stdscr.addnstr(1, 0, f"Pos: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) | Chunk: [{chunk_x}, {chunk_z}] ({dirty_status})",                                       self.term_width - 1)
             self.stdscr.addnstr(2, 0, f"Chunks: {stats['active_chunks']}/{stats['total_generated']} | Render Distance: {self.chunk_manager.render_distance}",   self.term_width - 1)
+            self.stdscr.addnstr(3, 0, f"Changes: Total {mod_stats['total_modifications']} in {mod_stats['total_chunks_with_modifications']} Chunks", self.term_width - 1)
         
         for i in range(len(self.chat)):
             self.stdscr.addnstr(self.term_height - (len(self.chat)) + i, 0, self.chat[i], self.term_width - 1)
+
+        # name thingy above hotbar
+        if self.show_block_name:
+            block_name = self.block_names[self.selected_block]        
+            x_pos = (self.term_width - len(block_name)) // 2 + 1
+            self.stdscr.addnstr(self.term_height - 6, x_pos, block_name, self.term_width - 1)
 
         # self.stdscr.addnstr(self.term_height // 2 - 1, self.term_width // 2 - 1, "x", 1)
         # text overlay should go here
@@ -567,6 +681,10 @@ class TerminalRenderer:
         if chunk.blocks[local_x, block_y, local_z] != 0:
             chunk.blocks[local_x, block_y, local_z] = 0
             self.chunk_manager.update_chunk_mesh_fast(chunk_coord)
+            
+            # Mark chunk as dirty
+            self.chunk_manager.mark_chunk_dirty(chunk_coord, local_x, block_y, local_z, 0)
+            
             self.message(f"Broken block at ({local_x},{block_y},{local_z})")
             return True
         
@@ -623,6 +741,9 @@ class TerminalRenderer:
             chunk.blocks[local_x, place_y, local_z] = block_type
             self.chunk_manager.update_chunk_mesh_fast(chunk_coord)
             
+            # Mark chunk as dirty
+            self.chunk_manager.mark_chunk_dirty(chunk_coord, local_x, place_y, local_z, block_type)
+            
             self.message(f"Placed block={self.block_names[block_type]} at ({local_x},{place_y},{local_z})")
             return True
         
@@ -632,14 +753,7 @@ class TerminalRenderer:
         """raycast from camera to find target block face"""
         ray_origin = self.camera_position.copy()
         ray_direction = self.camera_front.copy()
-        """
-        # TODO temporary fix to the offset, barely fine tuned, 
-        # should be removed and fixed propperly, but works 4 now
-        ray_origin[0] += abs(ray_direction[0] - 0.2 )
-        ray_origin[1] += abs(ray_direction[1] - 0.2 )
-        ray_origin[2] += abs(ray_direction[2] - 0.2 )
-        #self.message(f"Ray dir: {ray_direction}")
-        """
+        
         ray_origin[0] += 0.5
         ray_origin[1] += 0.5
         ray_origin[2] += 0.5
@@ -751,6 +865,113 @@ class TerminalRenderer:
         glLineWidth(1.0)
         glColor3f(1.0, 1.0, 1.0)
 
+
+
+    def get_pause_menu_button_rects(self, num_buttons):
+        """Return a list of (x, y, w, h) for each button, centered on screen, with fixed size."""
+        button_width = 35
+        button_height = 5
+        spacing = 3
+        total_height = num_buttons * button_height + (num_buttons - 1) * spacing
+        start_y = (self.gl_height - total_height) // 2 +1
+        center_x = self.gl_width // 2
+        rects = []
+        for i in range(num_buttons):
+            x = center_x - button_width // 2
+            y = start_y + i * (button_height + spacing)
+            rects.append((x, y, button_width, button_height))
+        return rects
+
+    def get_pause_menu_hovered(self, mouse_x, mouse_y, num_buttons):
+        """Return the index of the button under the mouse, or None."""
+        rects = self.get_pause_menu_button_rects(num_buttons)
+        for i, (x, y, w, h) in enumerate(rects):
+            if x <= mouse_x <= x + w and y <= mouse_y <= y + h:
+                return i
+        return None
+
+    def draw_mouse_dot(self, x, y):
+        # Draw a small yellow dot at (x, y) in OpenGL coordinates
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(0, self.gl_width, 0, self.gl_height, -1, 1)
+        glMatrixMode(GL_MODELVIEW)
+        glPushMatrix()
+        glLoadIdentity()
+        glDisable(GL_DEPTH_TEST)
+        glPointSize(1.0)
+        glColor3f(1.0, 1.0, 0.0)
+        glBegin(GL_POINTS)
+        glVertex2f(x, y)
+        glEnd()
+        glPointSize(1.0)
+        glEnable(GL_DEPTH_TEST)
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+        glMatrixMode(GL_MODELVIEW)
+        glPopMatrix()
+
+    def draw_pause_menu(self, selected_idx, buttons, mouse_hover_idx=None, mouse_pos=None):
+        num_buttons = len(buttons)
+        rects = self.get_pause_menu_button_rects(num_buttons)
+        # Save OpenGL state
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(0, self.gl_width, 0, self.gl_height, -1, 1)
+        glMatrixMode(GL_MODELVIEW)
+        glPushMatrix()
+        glLoadIdentity()
+        glDisable(GL_DEPTH_TEST)
+
+        for i, (label, (x, y, w, h)) in enumerate(zip(buttons, rects)):
+            # Button color
+            if i == mouse_hover_idx:
+                glColor3f(0.8, 0.8, 0.8)  # hover highlight
+            elif i == selected_idx:
+                glColor3f(0.7, 0.7, 0.7)  # keyboard selected
+            else:
+                glColor3f(0.5, 0.5, 0.5)  # normal
+            # Draw filled rect
+            glBegin(GL_QUADS)
+            glVertex2f(x, y)
+            glVertex2f(x + w, y)
+            glVertex2f(x + w, y + h)
+            glVertex2f(x, y + h)
+            glEnd()
+            # Outline (thin)
+            glColor3f(0.0, 0.0, 0.0)
+            glLineWidth(1.0)
+            glBegin(GL_LINE_LOOP)
+            glVertex2f(x+1, y)
+            glVertex2f(x + w, y)
+            glVertex2f(x + w, y + h)
+            glVertex2f(x, y + h)
+            glEnd()
+            # Draw text with curses (stdscr)
+            term_y = int((self.term_height * (y + h // 2)) // self.gl_height)
+            term_x = max(0, (self.term_width - len(label)) // 2)
+            try:
+                if i == mouse_hover_idx or i == selected_idx:
+                    self.stdscr.addstr(term_y-1, term_x, label, curses.A_REVERSE)
+                else:
+                    self.stdscr.addstr(term_y-1, term_x, label)
+            except Exception:
+                pass
+
+        # Draw mouse dot on top if requested
+        if mouse_pos is not None:
+            mx, my = mouse_pos
+            if 0 <= mx < self.gl_width and 0 <= my < self.gl_height:
+                self.draw_mouse_dot(mx, my)
+
+        # Restore OpenGL state
+        glEnable(GL_DEPTH_TEST)
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+        glMatrixMode(GL_MODELVIEW)
+        glPopMatrix()
 
 
     def _init_buffers(self):
@@ -888,8 +1109,8 @@ class TerminalRenderer:
             glDisableClientState(GL_VERTEX_ARRAY)
             glDisableClientState(GL_COLOR_ARRAY)
         
-        
-        self.draw_block_highlight()
+        if self.show_block_name:
+            self.draw_block_highlight()
         
 
 

@@ -1,0 +1,8 @@
+{
+    "chunk_update_intreval": 1.0,
+    "min_movement_threshold": 6.0,
+    "min_fps_threshold": 5.0,
+    "target_fps": 60.0,
+    "texture": "basic",
+    "render_distance": 3
+}

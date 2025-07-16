@@ -6,6 +6,9 @@ from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import Manager
 import time
 import os
+import pickle
+import struct
+import json
 
 import numba
 from numba import njit, prange
@@ -85,11 +88,19 @@ def compute_face_visibility(blocks, size_x, size_y, size_z):
 
 @njit
 def get_face_color(block_type, face_idx, color_lookup):
-    face_type = 0
-    if face_idx in (0, 1, 4, 5):  face_type = 1  # side faces
-    elif face_idx == 3:           face_type = 2  # bottom face
-    
-    return color_lookup[block_type, face_type]
+    # 0: +z, 1: -z, 2: +y, 3: -y, 4: +x, 5: -x
+    # color_idx: 0=top, 1=bottom, 2=side, 3=zside
+    if face_idx == 2:
+        color_idx = 0  # top
+    elif face_idx == 3:
+        color_idx = 1  # bottom
+    elif face_idx in (4, 5):
+        color_idx = 2  # side (+x/-x)
+    elif face_idx in (0, 1):
+        color_idx = 3  # zside (+z/-z)
+    else:
+        color_idx = 2
+    return color_lookup[block_type, color_idx]
 
 @njit
 def count_visible_faces(blocks, visibility, size_x, size_y, size_z):
@@ -138,7 +149,7 @@ def generate_mesh_data(blocks, color_lookup, pos_x, pos_z, size_x, size_y, size_
                         vertex_idx = face_count * 4
                         for i in range(4):
                             vertices[vertex_idx + i] = FACE_VERTICES[face_idx, i] + block_pos
-                            colors[vertex_idx + i]   = face_color
+                            colors[vertex_idx + i] = face_color
                         
                         face_count += 1
     
@@ -151,34 +162,87 @@ class BlockType(IntEnum):
 class BiomeType(IntEnum):
     PLAINS, MOUNTAINS, FOREST, DESERT = range(4)
 
+class ChunkModification:
+    """store block modifications of a chunk"""
+    # temp worlds (not saved on disk) will still save modifications in runtime memory
+    def __init__(self, chunk_coord):
+        self.chunk_coord = chunk_coord
+        self.modifications = {}  # (x, y, z) -> block_type
+        self.is_dirty = False
+    
+
+    def add_modification(self, local_x, local_y, local_z, block_type):
+        key = (local_x, local_y, local_z)
+        self.modifications[key] = block_type
+        self.is_dirty = True
+    
+    def apply_to_chunk(self, chunk):
+        for (x, y, z), block_type in self.modifications.items():
+            if (0 <= x < chunk.size_x and 
+                0 <= y < chunk.size_y and 
+                0 <= z < chunk.size_z):
+                chunk.blocks[x, y, z] = block_type
+    
+    def is_empty(self):
+        return len(self.modifications) == 0
+    
+    def get_serialized_size(self):
+        # 3bytes for coords + 1byte for type  ->  modification
+        return len(self.modifications) * 4
+    
+
+
+    #@classmethod
+    def serialize(self):
+        """serialize to bytes"""
+        if self.is_empty(): return b''
+        
+
+        # format: count (4bytes) + modifications (4bytes each)
+        data = struct.pack('<I', len(self.modifications))
+        for (x, y, z), block_type in self.modifications.items():
+            data += struct.pack('<BBBB', x, y, z, block_type)
+        return data
+    
+    @classmethod
+    def deserialize(cls, chunk_coord, data):
+        """deserialize from bytes"""
+        if not data:  return cls(chunk_coord)
+        
+        mod    = cls(chunk_coord)
+        offset = 4
+        count  = struct.unpack('<I', data[:4])[0]
+        
+        
+        for _ in range(count):
+            x, y, z, block_type = struct.unpack('<BBBB', data[offset:offset+4])
+            mod.modifications[(x, y, z)] = block_type
+            offset += 4
+
+        
+        return mod
+
 # -- old --
 
 class Chunk:
-    def __init__(self, pos_x=0, pos_z=0, size_x=16, size_y=64, size_z=16, seed=0):
+    def __init__(self, pos_x=0, pos_z=0, size_x=16, size_y=64, size_z=16, seed=0, texture_data=None, generate_features=True, generate_cave_worms=True):
         self.pos_x,  self.pos_z = pos_x, pos_z
         self.size_x, self.size_y, self.size_z = size_x, size_y, size_z
+        self.generate_features = generate_features
+        self.generate_cave_worms = generate_cave_worms
         
         self.blocks = np.zeros((size_x, size_y, size_z), dtype=np.uint8)
         self.seed = seed
-        
-        self.block_colors = {
-            BlockType.GRASS:  np.array([[0.0, 0.8, 0.0], [0.6, 0.4, 0.2], [0.0, 0.8, 0.0]], dtype=np.float32),
-            BlockType.DIRT:   np.array([[0.6, 0.4, 0.2], [0.6, 0.4, 0.2], [0.5, 0.3, 0.1]], dtype=np.float32),
-            BlockType.STONE:  np.array([[0.7, 0.7, 0.7], [0.5, 0.5, 0.5], [0.7, 0.7, 0.7]], dtype=np.float32),
-            BlockType.LOG:    np.array([[0.6, 0.4, 0.2], [0.5, 0.3, 0.1], [0.6, 0.4, 0.2]], dtype=np.float32),
-            BlockType.WOOD:   np.array([[0.7, 0.5, 0.3], [0.6, 0.4, 0.2], [0.7, 0.5, 0.3]], dtype=np.float32),
-            BlockType.LEAVES: np.array([[0.0, 0.6, 0.0], [0.0, 0.5, 0.0], [0.0, 0.4, 0.0]], dtype=np.float32),
-            BlockType.SAND:   np.array([[0.9, 0.8, 0.6], [0.85, 0.75, 0.55], [0.9, 0.8, 0.6]], dtype=np.float32),
-            BlockType.CACTUS: np.array([[0.0, 0.7, 0.0], [0.0, 0.6, 0.0], [0.0, 0.5, 0.0]], dtype=np.float32),
-            BlockType.WATER:  np.array([[0.0, 0.5, 1.0], [0.0, 0.45, 0.9], [0.0, 0.5, 1.0]], dtype=np.float32),
-        }
-        
-        # color lookups
-        self.color_lookup = np.zeros((len(BlockType), 3, 3), dtype=np.float32)
+        # Use pre-loaded texture data
+        self.block_colors = texture_data if texture_data else {}
+        self.color_lookup = np.zeros((len(BlockType), 4, 3), dtype=np.float32)
         for block_type, colors in self.block_colors.items():
             self.color_lookup[block_type] = colors
         
         random.seed(seed)
+        np.random.seed(seed)
+        # seed offset for noise generation
+        self._seed_offset = seed * 0.1
         self._generate_terrain()
         self.mesh_data = None
     
@@ -188,12 +252,19 @@ class Chunk:
     def _get_noise(self, x, z, scale):
         world_x = x + self.pos_x * self.size_x
         world_z = z + self.pos_z * self.size_z
-        return snoise2(world_x / scale, world_z / scale)
+        
+        seed_offset = getattr(self, '_seed_offset', self.seed * 0.1)
+        return snoise2((world_x + seed_offset) / scale, (world_z + seed_offset) / scale)
 
     def _get_3d_noise(self, x, y, z, scale):
         world_x = x + self.pos_x * self.size_x
         world_z = z + self.pos_z * self.size_z
-        return snoise3(world_x / scale, y / scale, world_z / scale)
+        
+        seed_offset = getattr(self, '_seed_offset', self.seed * 0.1)
+        return snoise3((world_x + seed_offset) / scale, y / scale, (world_z + seed_offset) / scale)
+
+
+
 
     def _get_biome(self, x, z):
         temperature = self._get_noise(x, z, 100)
@@ -265,12 +336,15 @@ class Chunk:
                 heightmap[x, z] = int(min(max(height, 1), self.size_y - 1))
         
         # chunk cave mask 
-        cave_mask = np.zeros((self.size_x, self.size_y, self.size_z), dtype=bool)
-        for x in range(self.size_x):
-            for y in range(min(40, self.size_y)):  # only below y=40
-                for z in range(self.size_z):
-                    cave_val = self._get_3d_noise(x, y, z, 20)
-                    cave_mask[x, y, z] = cave_val > 0.7
+        if self.generate_cave_worms:
+            cave_mask = np.zeros((self.size_x, self.size_y, self.size_z), dtype=bool)
+            for x in range(self.size_x):
+                for y in range(min(40, self.size_y)):  # only below y=40
+                    for z in range(self.size_z):
+                        cave_val = self._get_3d_noise(x, y, z, 20)
+                        cave_mask[x, y, z] = cave_val > 0.7
+        else:
+            cave_mask = np.zeros((self.size_x, self.size_y, self.size_z), dtype=bool)
 
         # fill terrain
         for x in range(self.size_x):
@@ -317,57 +391,50 @@ class Chunk:
                     else:  self.blocks[x, y, z] = BlockType.STONE
         
         # features
-        for x in range(self.size_x):
-            for z in range(self.size_z):
-                height = heightmap[x, z]
-                biome  = biome_map[x, z]
-                
+        if self.generate_features:
+            for x in range(self.size_x):
+                for z in range(self.size_z):
+                    height = heightmap[x, z]
+                    biome  = biome_map[x, z]
+                    
 
-                if height >= water_level and height < self.size_y - 6:
-                    if   biome == BiomeType.FOREST and random.random() < 0.1:
-                        self._place_tree(x, height + 1, z)
-                    elif biome == BiomeType.PLAINS and random.random() < 0.02:
-                        self._place_tree(x, height + 1, z)
-                    elif biome == BiomeType.DESERT and random.random() < 0.02:
-                        self._place_cactus(x, height + 1, z)
+                    if height >= water_level and height < self.size_y - 6:
+                        if   biome == BiomeType.FOREST and random.random() < 0.1:
+                            self._place_tree(x, height + 1, z)
+                        elif biome == BiomeType.PLAINS and random.random() < 0.02:
+                            self._place_tree(x, height + 1, z)
+                        elif biome == BiomeType.DESERT and random.random() < 0.02:
+                            self._place_cactus(x, height + 1, z)
 
 
 
     def get_face_color(self, block_type, face_idx):
         if block_type == BlockType.AIR: return [0, 0, 0]
-        
-        face_type = 0
-        if face_idx in [0, 1, 4, 5]: face_type = 1
-        elif face_idx == 3:          face_type = 2
-            
-        return self.block_colors[block_type][face_type]
-
-    """
-    def generate_mesh_data(self):
-        # replacement for Chunk.generate_mesh_data using Numba acceleration.
-        if self.mesh_data is not None:
-            return self.mesh_data
-
-        #start_time = time.time()
-        
-        # Call the optimized mesh generation
-        vertices, colors = _generate_mesh_data(
-            self.blocks, self.color_lookup, 
-            self.pos_x, self.pos_z, 
-            self.size_x, self.size_y, self.size_z
-        )
-        
-        self.mesh_data = (vertices, colors)
-        #print(f"Mesh data generated in {time.time() - start_time:.2f} seconds")
-        return self.mesh_data
-    """
+        # 0: +z, 1: -z, 2: +y, 3: -y, 4: +x, 5: -x
+        if face_idx == 2:
+            color_idx = 0  # top
+        elif face_idx == 3:
+            color_idx = 1  # bottom
+        elif face_idx in (4, 5):
+            color_idx = 2  # side (+x/-x)
+        elif face_idx in (0, 1):
+            color_idx = 3  # zside (+z/-z)
+        else:
+            color_idx = 2
+        return self.block_colors[block_type][color_idx]
 
 
 
 
 def generate_chunk_process(args):
-    pos_x, pos_z, chunk_size, seed = args
-    chunk = Chunk(pos_x, pos_z, chunk_size, 64, chunk_size, seed)
+    pos_x, pos_z, chunk_size, seed, modifications_data, texture_data, generate_features, generate_cave_worms = args
+    chunk = Chunk(pos_x, pos_z, chunk_size, 64, chunk_size, seed, texture_data, generate_features, generate_cave_worms)
+    
+    # apply mods
+    if modifications_data:
+        mod = ChunkModification.deserialize((pos_x, pos_z), modifications_data)
+        mod.apply_to_chunk(chunk)
+    
     return (pos_x, pos_z), (chunk.blocks, chunk.block_colors, chunk.color_lookup)
 
 def process_chunk_mesh(args):
@@ -377,12 +444,19 @@ def process_chunk_mesh(args):
     if not isinstance(color_lookup, np.ndarray):
         # create color lookup as numpy array
         max_block_type = max(block_colors.keys()) + 1
-        color_lookup_array = np.zeros((max_block_type, 3, 3), dtype=np.float32)
+        color_lookup_array = np.zeros((max_block_type, 4, 3), dtype=np.float32)
         
         for block_type, colors in block_colors.items():
             color_lookup_array[block_type] = colors
 
         color_lookup = color_lookup_array
+    elif color_lookup.shape[1] == 3:
+        # support old 3color format, -> expand to 4
+        new_lookup = np.zeros((color_lookup.shape[0], 4, 3), dtype=np.float32)
+        new_lookup[:, :3, :] = color_lookup
+        
+        new_lookup[:,  3, :] = color_lookup[:, 2, :] * 0.92
+        color_lookup = new_lookup
     
     # generate mesh data
     vertices, colors = generate_mesh_data(
@@ -398,7 +472,7 @@ def process_chunk_mesh(args):
 
 
 class ChunkManager:
-    def __init__(self, chunk_size=16, render_distance=5, seed=None, max_workers=None):
+    def __init__(self, chunk_size=16, render_distance=5, seed=None, max_workers=None, world_name=None, texture_name="basic"):
         self.chunk_size      = chunk_size
         self.spawn_distance  =  render_distance
         self.render_distance = render_distance
@@ -419,6 +493,15 @@ class ChunkManager:
             "total_generated": 0
         }
         
+        # texture
+        with open(f"texture/{texture_name}.json", "r") as f:
+            texdata = json.load(f)
+
+        self.texture_data = {}
+        for name, arr in texdata.items():
+            blocktype = getattr(BlockType, name)
+            self.texture_data[blocktype] = np.array(arr, dtype=np.float32)
+        
         # auto workers based on available cores
         if max_workers is None:
             max_workers = min(4, max(1, os.cpu_count() - 1))
@@ -434,6 +517,11 @@ class ChunkManager:
         
         
         self.distance_cache = {}
+        
+        # load mods before pregeneration!!!
+        if self.modifications_dir:
+            self._load_existing_modifications()
+        
         self.pregenerate_chunks()
         
         # Chunk generation and management configs
@@ -499,7 +587,7 @@ class ChunkManager:
             for x, z in batch:
                 future = self.executor.submit(
                     generate_chunk_process, 
-                    (x, z, self.chunk_size, self.seed)
+                    (x, z, self.chunk_size, self.seed, None, self.texture_data, self.generate_features, self.generate_cave_worms) # No modifications for pregeneration
                 )
                 futures.append((future, (x, z)))
                 logging.info(f"Queued chunk generation for ({x}, {z})")
@@ -509,10 +597,15 @@ class ChunkManager:
                 try:
                     _, (blocks, block_colors, color_lookup) = future.result()
                     # store as chunk data
-                    chunk = Chunk(x, z, self.chunk_size, 64, self.chunk_size, self.seed)
+                    chunk = Chunk(x, z, self.chunk_size, 64, self.chunk_size, self.seed, self.texture_data, self.generate_features, self.generate_cave_worms)
                     chunk.blocks        = blocks
                     chunk.block_colors  = block_colors
                     chunk.color_lookup  = color_lookup
+                    
+                    # apply modifications
+                    if (x, z) in self.chunk_modifications:
+                        self.apply_modifications_to_chunk((x, z), chunk)
+                    
                     self.chunks[(x, z)] = chunk
                     self.chunk_data[(x, z)] = (blocks, block_colors, color_lookup)
                     self.loaded_chunks.add((x, z))
@@ -600,7 +693,7 @@ class ChunkManager:
             if (x, z) not in self.chunks and (x, z) not in self.pending_futures:
                 future = self.executor.submit(
                     generate_chunk_process, 
-                    (x, z, self.chunk_size, self.seed)
+                    (x, z, self.chunk_size, self.seed, None, self.texture_data, self.generate_features, self.generate_cave_worms) # No modifications for pregeneration
                 )
                 self.pending_futures[(x, z)] = future
                 chunks_queued += 1
@@ -623,7 +716,7 @@ class ChunkManager:
                 try:
                     (x, z), (blocks, block_colors, color_lookup) = future.result()
                     # store as chunk data
-                    chunk = Chunk(x, z, self.chunk_size, 64, self.chunk_size, self.seed)
+                    chunk = Chunk(x, z, self.chunk_size, 64, self.chunk_size, self.seed, self.texture_data, self.generate_features, self.generate_cave_worms)
                     chunk.blocks        = blocks
                     chunk.block_colors  = block_colors
                     chunk.color_lookup  = color_lookup
@@ -650,7 +743,7 @@ class ChunkManager:
         # process mesh generation queue (limited to avoid lag)
         # only process 1 mesh p/ frame to maintain stable fps
         # update this for high end hardware
-        self.process_mesh_queue(1) # 2
+        self.process_mesh_queue(2) # 1
         
         
         self.stats["active_chunks"] = len(self.loaded_chunks)
@@ -853,9 +946,9 @@ class ChunkThread(threading.Thread):
 
 
 class ThreadedChunkManager(ChunkManager):
-    def __init__(self, chunk_size=16, render_distance=5, seed=None, max_workers=None):
+    def __init__(self, chunk_size=16, render_distance=5, seed=None, max_workers=None, world_name=None, texture_name="basic"):
         
-        logging.info(f"Chunk Manager Initialized with Render_Distance={render_distance}, Max_Workers={max_workers}, seed={seed}")
+        logging.info(f"Chunk Manager Initialized with Render_Distance={render_distance}, Max_Workers={max_workers}, initial_seed={seed}")
         
         # CHANGE THESE ONES if using threaded chunk generation (yes, you are)
         # Chunk generation and management configs
@@ -911,6 +1004,33 @@ class ThreadedChunkManager(ChunkManager):
         self.last_priority_update      = time.time()
         self.priority_update_interval  = 1.2               # 0.6
 
+        # load world configs before parents
+        if world_name:
+            data_file = os.path.join("saves", world_name, "data.json")
+            if os.path.exists(data_file):
+                with open(data_file, 'r') as f: world_data = json.load(f)
+                self.seed = world_data.get("seed", seed)  # Override seed from data.json
+                self.generate_features   = world_data.get("generateFeatures",  True)
+                self.generate_cave_worms = world_data.get("generateCaveWorms", True)
+                logging.info(f"Loaded world config: seed={self.seed}, features={self.generate_features}, caves={self.generate_cave_worms}")
+            else:
+                self.seed = seed if seed is not None else random.randint(0, 999999)
+                self.generate_features   = True
+                self.generate_cave_worms = True
+        else:
+            self.seed = seed if seed is not None else random.randint(0, 999999)
+            self.generate_features   = True
+            self.generate_cave_worms = True
+        
+        # Dirty chunk management
+        self.chunk_modifications = {}  # chunk_coord -> ChunkModification
+        self.dirty_chunks = set()      # set of chunk coordinates that have modifications
+        if world_name:
+            self.modifications_dir = os.path.join("saves", world_name)
+        else:
+            self.modifications_dir = None
+        if self.modifications_dir:
+            self._ensure_modifications_dir()
         
         _WIDTH, _HEIGHT = os.get_terminal_size()
         logging.info(f"Max_Unloads={self.max_unloads_per_frame}, Max_History={self.position_history_max}, Max_Loads={self.max_loads_per_frame}, Load_Cooldown={self.chunk_load_cooldown}, Max_Loaded={self.max_loaded_chunks}, Screen_Size={_WIDTH}x{_HEIGHT}")
@@ -919,7 +1039,7 @@ class ThreadedChunkManager(ChunkManager):
         
         
 
-        super().__init__(chunk_size, render_distance, seed, max_workers)
+        super().__init__(chunk_size, render_distance, self.seed, max_workers, world_name, texture_name)
         
         # replace executor with thread
         if hasattr(self, 'executor'):
@@ -1015,6 +1135,17 @@ class ThreadedChunkManager(ChunkManager):
         self._manage_memory()
         self._manage_mesh_cache()
         self.process_unload_queue()
+        
+        # save of modifications ( 30 seconds )
+        current_time = time.time()
+        if not hasattr(self, 'last_modification_save'):
+            self.last_modification_save = current_time
+        
+        if current_time - self.last_modification_save > 30.0:
+            for chunk_coord in self.chunk_modifications:
+                if self.chunk_modifications[chunk_coord].is_dirty:
+                    self.save_chunk_modifications(chunk_coord)
+            self.last_modification_save = current_time
 
         current_time = time.time()
         
@@ -1069,8 +1200,16 @@ class ThreadedChunkManager(ChunkManager):
                     (x, z) not in self.chunks and 
                     (x, z) not in self.chunks_being_generated
                     ):
+                    
+                    # Check if chunk has modifications
+                    modifications_data = None
+                    if (x, z) in self.chunk_modifications:
+                        mod = self.chunk_modifications[(x, z)]
+                        if not mod.is_empty():
+                            modifications_data = mod.serialize()
+                    
                     self.chunk_thread.queue_chunk_generation(
-                        (x, z, self.chunk_size, self.seed),
+                        (x, z, self.chunk_size, self.seed, modifications_data, self.texture_data, self.generate_features, self.generate_cave_worms),
                         priority=1000  # highest priority for visible chunks
                     )
                     self.chunks_being_generated.add((x, z))
@@ -1088,6 +1227,10 @@ class ThreadedChunkManager(ChunkManager):
 
     def unload_chunk(self, chunk_coord):
         if chunk_coord in self.chunks:
+            # save modifications before unloading
+            if chunk_coord in self.chunk_modifications:
+                self.save_chunk_modifications(chunk_coord)
+            
             # track memory usage before unloading
             if chunk_coord in self.chunk_memory_usage:
                 del self.chunk_memory_usage[chunk_coord]
@@ -1128,6 +1271,9 @@ class ThreadedChunkManager(ChunkManager):
                     if chunk_coord in self.chunk_meshes:
                         self.chunks_to_remove_from_mesh.add(chunk_coord)
                     
+                    # save modifications before unloading
+                    if chunk_coord in self.chunk_modifications:
+                        self.save_chunk_modifications(chunk_coord)
                     
                     self.loaded_chunks.remove(chunk_coord)
                     if chunk_coord in self.chunks:
@@ -1200,13 +1346,17 @@ class ThreadedChunkManager(ChunkManager):
                 (x, z), (blocks, block_colors, color_lookup) = self.chunk_thread.completed_chunks.get_nowait()
                 
                 
-                chunk = Chunk(x, z, self.chunk_size, 64, self.chunk_size, self.seed)
+                chunk = Chunk(x, z, self.chunk_size, 64, self.chunk_size, self.seed, self.texture_data, self.generate_features, self.generate_cave_worms)
                 chunk.blocks = blocks
                 chunk.block_colors = block_colors
                 chunk.color_lookup = color_lookup
                 self.chunks[(x, z)] = chunk
                 self.chunk_data[(x, z)] = (blocks, block_colors, color_lookup)
                 self.stats["total_generated"] += 1
+                
+                # apply modifications
+                if (x, z) in self.chunk_modifications:
+                    self.apply_modifications_to_chunk((x, z), chunk)
                 
                 # remove from in progress set
                 if (x, z) in self.chunks_being_generated:
@@ -1275,6 +1425,120 @@ class ThreadedChunkManager(ChunkManager):
     def cleanup(self):
         if hasattr(self, 'chunk_thread'): self.chunk_thread.stop()
         if hasattr(self, 'executor'): self.executor.shutdown(wait=False)
+
+    def _ensure_modifications_dir(self):
+        if self.modifications_dir and not os.path.exists(self.modifications_dir):
+            os.makedirs(self.modifications_dir)
+    
+    def _load_existing_modifications(self):
+        """load all existing chunk mods from disk -> memory"""
+        if not self.modifications_dir or not os.path.exists(self.modifications_dir): return
+        
+        loaded_count = 0
+        for filename in os.listdir(self.modifications_dir):
+            if filename.startswith("chunk_") and filename.endswith(".dat"):
+                try:
+                    # parse chunk coords from filename
+                    parts = filename[6:-4].split('_')  # Format "chunk_" {} ".dat"
+                    if len(parts) == 2:
+                        x, z = int(parts[0]), int(parts[1])
+                        chunk_coord = (x, z)
+                        
+                        # load mods
+                        mod = self.load_chunk_modifications(chunk_coord)
+                        if mod and not mod.is_empty():
+                            self.chunk_modifications[chunk_coord] = mod
+                            self.dirty_chunks.add(chunk_coord)
+                            loaded_count += 1
+                except (ValueError, IndexError) as e:
+                    log_callback(f"Skipping invalid modification file {filename}: {e}")
+        
+        if loaded_count > 0:
+            log_callback(f"Loaded {loaded_count} chunk modifications from disk")
+    
+    def _get_modification_filename(self, chunk_coord):
+        if not self.modifications_dir:  return None
+        return os.path.join(self.modifications_dir, f"chunk_{chunk_coord[0]}_{chunk_coord[1]}.dat")
+    
+    def save_chunk_modifications(self, chunk_coord):
+        """save modifications for a chunk to disk"""
+        if not self.modifications_dir or chunk_coord not in self.chunk_modifications:  return
+        mod = self.chunk_modifications[chunk_coord]
+        if mod.is_empty():  return
+        filename = self._get_modification_filename(chunk_coord)
+        if not filename:    return
+        try:
+            with open(filename, 'wb') as f:
+                f.write(mod.serialize())
+        except Exception as e:
+            log_callback(f"Failed to save modifications for chunk {chunk_coord}: {e}")
+    
+    def load_chunk_modifications(self, chunk_coord):
+        """load modifications for a chunk from disk"""
+        filename = self._get_modification_filename(chunk_coord)
+        if not filename or not os.path.exists(filename): return None
+        try:
+            with open(filename, 'rb') as f:
+                data = f.read()
+            return ChunkModification.deserialize(chunk_coord, data)
+        except Exception as e:
+            log_callback(f"Failed to load modifications for chunk {chunk_coord}: {e}")
+            return None
+    
+    def mark_chunk_dirty(self, chunk_coord, local_x, local_y, local_z, block_type):
+        if chunk_coord not in self.chunk_modifications:
+            self.chunk_modifications[chunk_coord] = ChunkModification(chunk_coord)
+        
+        mod = self.chunk_modifications[chunk_coord]
+        mod.add_modification(local_x, local_y, local_z, block_type)
+        self.dirty_chunks.add(chunk_coord)
+        
+        # immediate save
+        self.save_chunk_modifications(chunk_coord)
+    
+    def apply_modifications_to_chunk(self, chunk_coord, chunk):
+        if chunk_coord in self.chunk_modifications:
+            mod = self.chunk_modifications[chunk_coord]
+            if not mod.is_empty():
+                mod.apply_to_chunk(chunk)
+                log_callback(f"Applied {len(mod.modifications)} changes to Chunk {chunk_coord}")
+    
+    def is_chunk_dirty(self, chunk_coord):
+        return chunk_coord in self.dirty_chunks or chunk_coord in self.chunk_modifications
+    
+    def clear_all_modifications(self):
+        if self.modifications_dir and os.path.exists(self.modifications_dir):
+            for filename in os.listdir(self.modifications_dir):
+                if filename.startswith("chunk_") and filename.endswith(".dat"):
+                    os.remove(os.path.join(self.modifications_dir, filename))
+        self.chunk_modifications.clear()
+        self.dirty_chunks.clear()
+        log_callback("Cleared all chunk modifications")
+    
+    def get_modification_stats(self):
+        total_modifications = 0
+        dirty_chunks = 0
+        
+        for chunk_coord, mod in self.chunk_modifications.items():
+            total_modifications += len(mod.modifications)
+            if mod.is_dirty:
+                dirty_chunks += 1
+        
+        return {
+            'total_chunks_with_modifications': len(self.chunk_modifications),
+            'dirty_chunks': dirty_chunks,
+            'total_modifications': total_modifications
+        }
+    
+    def cleanup_modifications(self):
+        chunks_to_remove = []
+        for chunk_coord in self.chunk_modifications:
+            if chunk_coord not in self.chunks:
+                chunks_to_remove.append(chunk_coord)
+        
+        for chunk_coord in chunks_to_remove:
+            del self.chunk_modifications[chunk_coord]
+            self.dirty_chunks.discard(chunk_coord)
 
       
         

@@ -6,6 +6,8 @@ Since the render is what causes most spikes, consider changing the render distan
 Additionally, if you have above-medium / high end harware, also change the settings to the high ones for faster calculations, generation and rendering etcetc
 
 # showcase
+<img width="1878" height="1059" alt="image" src="https://github.com/user-attachments/assets/e556e16c-5869-4c81-93fd-13a3e883d13c" />
+
 <img src="https://github.com/user-attachments/assets/e1a3d29f-60dd-47ff-8444-a4691e17174f" width="400">
 <img src="https://github.com/user-attachments/assets/a728239c-0904-4313-9d9c-bc2aa7314bf1" width="400">
 
